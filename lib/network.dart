@@ -10,13 +10,17 @@
 library network;
 
 import 'dart:async';
-import 'dart:io' as io;
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+
+import 'src/base_client.dart';
+import 'src/client_stub.dart'
+    if (dart.library.io) 'src/io_client.dart'
+    if (dart.library.html) 'src/browser_client.dart';
 
 /// Fetches the image from the given URL, associating it with the given scale.
 ///
@@ -29,13 +33,13 @@ class NetworkImageWithRetry extends ImageProvider<NetworkImageWithRetry> {
   /// Creates an object that fetches the image at the given [url].
   ///
   /// The arguments must not be null.
-  const NetworkImageWithRetry(this.url, { this.scale = 1.0, this.fetchStrategy = defaultFetchStrategy })
+  const NetworkImageWithRetry(this.url, {this.scale = 1.0, this.fetchStrategy = defaultFetchStrategy})
       : assert(url != null),
         assert(scale != null),
         assert(fetchStrategy != null);
 
-  /// The HTTP client used to download images.
-  static final io.HttpClient _client = io.HttpClient();
+  /// The http client used to download images.
+  static final Client _client = createClient();
 
   /// The URL from which the image will be fetched.
   final String url;
@@ -74,8 +78,8 @@ class NetworkImageWithRetry extends ImageProvider<NetworkImageWithRetry> {
     return OneFrameImageStreamCompleter(
         _loadWithRetry(key, decode),
         informationCollector: () sync* {
-          yield ErrorDescription('Image provider: $this');
-          yield ErrorDescription('Image key: $key');
+      yield ErrorDescription('Image provider: $this');
+      yield ErrorDescription('Image key: $key');
         }
     );
   }
@@ -86,13 +90,13 @@ class NetworkImageWithRetry extends ImageProvider<NetworkImageWithRetry> {
         if (fetchStrategy == defaultFetchStrategy) {
           throw StateError(
             'The default FetchStrategy returned null FetchInstructions. This\n'
-            'is likely a bug in $runtimeType. Please file a bug at\n'
+              'is likely a bug in $runtimeType. Please file a bug at\n'
             'https://github.com/flutter/flutter/issues.'
           );
         } else {
           throw StateError(
             'The custom FetchStrategy used to fetch $url returned null\n'
-            'FetchInstructions. FetchInstructions must never be null, but\n'
+              'FetchInstructions. FetchInstructions must never be null, but\n'
             'instead instruct to either make another fetch attempt or give up.'
           );
         }
@@ -113,10 +117,10 @@ class NetworkImageWithRetry extends ImageProvider<NetworkImageWithRetry> {
 
     while (!instructions.shouldGiveUp) {
       attemptCount += 1;
-      io.HttpClientRequest request;
+      Request request;
       try {
-        request = await _client.getUrl(instructions.uri).timeout(instructions.timeout);
-        final io.HttpClientResponse response = await request.close().timeout(instructions.timeout);
+        request = await _client.get(instructions.uri).timeout(instructions.timeout);
+        final Response response = await request.send().timeout(instructions.timeout);
 
         if (response == null || response.statusCode != 200) {
           throw FetchFailure._(
@@ -126,20 +130,15 @@ class NetworkImageWithRetry extends ImageProvider<NetworkImageWithRetry> {
           );
         }
 
-        final _Uint8ListBuilder builder = await response.fold(
-          _Uint8ListBuilder(),
-              (_Uint8ListBuilder buffer, List<int> bytes) => buffer..add(bytes),
-        ).timeout(instructions.timeout);
-
-        final Uint8List bytes = builder.data;
-
-        if (bytes.lengthInBytes == 0)
+        if (response.bytes == null) {
           return null;
+        }
 
-        final ui.Codec codec = await decode(bytes);
+        if (response.bytes.lengthInBytes == 0) return null;
+
+        final ui.Codec codec = await decode(response.bytes);
         final ui.Image image = (await codec.getNextFrame()).image;
-        if (image == null)
-          return null;
+        if (image == null) return null;
 
         return ImageInfo(
           image: image,
@@ -225,8 +224,8 @@ class FetchInstructions {
   const FetchInstructions.attempt({
     @required this.uri,
     @required this.timeout,
-  }) : shouldGiveUp = false,
-       alternativeImage = null;
+  })  : shouldGiveUp = false,
+        alternativeImage = null;
 
   /// Instructs to give up trying.
   ///
@@ -246,11 +245,11 @@ class FetchInstructions {
   @override
   String toString() {
     return '$runtimeType(\n'
-      '  shouldGiveUp: $shouldGiveUp\n'
-      '  timeout: $timeout\n'
-      '  uri: $uri\n'
-      '  alternativeImage?: ${alternativeImage != null ? 'yes' : 'no'}\n'
-      ')';
+        '  shouldGiveUp: $shouldGiveUp\n'
+        '  timeout: $timeout\n'
+        '  uri: $uri\n'
+        '  alternativeImage?: ${alternativeImage != null ? 'yes' : 'no'}\n'
+        ')';
   }
 }
 
@@ -262,8 +261,8 @@ class FetchFailure implements Exception {
     @required this.attemptCount,
     this.httpStatusCode,
     this.originalException,
-  }) : assert(totalDuration != null),
-       assert(attemptCount > 0);
+  })  : assert(totalDuration != null),
+        assert(attemptCount > 0);
 
   /// The total amount of time it has taken so far to download the image.
   final Duration totalDuration;
@@ -294,7 +293,7 @@ class FetchFailure implements Exception {
 
 /// An indefinitely growing builder of a [Uint8List].
 class _Uint8ListBuilder {
-  static const int _kInitialSize = 100000;  // 100KB-ish
+  static const int _kInitialSize = 100000; // 100KB-ish
 
   int _usedLength = 0;
   Uint8List _buffer = Uint8List(_kInitialSize);
@@ -345,19 +344,19 @@ class FetchStrategyBuilder {
     this.initialPauseBetweenRetries = const Duration(seconds: 1),
     this.exponentialBackoffMultiplier = 2,
     this.transientHttpStatusCodePredicate = defaultTransientHttpStatusCodePredicate,
-  }) : assert(timeout != null),
-       assert(totalFetchTimeout != null),
-       assert(maxAttempts != null),
-       assert(initialPauseBetweenRetries != null),
-       assert(exponentialBackoffMultiplier != null),
-       assert(transientHttpStatusCodePredicate != null);
+  })  : assert(timeout != null),
+        assert(totalFetchTimeout != null),
+        assert(maxAttempts != null),
+        assert(initialPauseBetweenRetries != null),
+        assert(exponentialBackoffMultiplier != null),
+        assert(transientHttpStatusCodePredicate != null);
 
   /// A list of HTTP status codes that can generally be retried.
   ///
   /// You may want to use a different list depending on the needs of your
   /// application.
   static const List<int> defaultTransientHttpStatusCodes = <int>[
-    0,   // Network error
+    0, // Network error
     408, // Request timeout
     500, // Internal server error
     502, // Bad gateway
@@ -408,8 +407,8 @@ class FetchStrategyBuilder {
           failure.originalException is io.SocketException;
 
       // If cannot retry, give up.
-      if (!isRetriableFailure ||  // retrying will not help
-          failure.totalDuration > totalFetchTimeout ||  // taking too long
+      if (!isRetriableFailure || // retrying will not help
+          failure.totalDuration > totalFetchTimeout || // taking too long
           failure.attemptCount > maxAttempts) {  // too many attempts
         return FetchInstructions.giveUp(uri: uri);
       }
